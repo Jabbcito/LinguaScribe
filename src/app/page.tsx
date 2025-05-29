@@ -25,13 +25,14 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
-  AlertDialogTitle as RadixAlertDialogTitle, // Renamed to avoid conflict
+  AlertDialogTitle as RadixAlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { initDB, getAllNotesDB, addNoteDB, updateNoteDB, deleteNoteDB, getNoteDB } from "@/lib/db";
 
 const LS_EDITOR_CONTENT = "linguaScribe_editorMarkdownContent";
-const LS_NOTES_COLLECTION = "linguaScribe_notesCollection";
+// const LS_NOTES_COLLECTION = "linguaScribe_notesCollection"; // Notes now in IndexedDB
 const LS_ACTIVE_NOTE_ID = "linguaScribe_activeNoteId";
 
 export default function LinguaScribePage() {
@@ -41,47 +42,69 @@ export default function LinguaScribePage() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [newNoteName, setNewNoteName] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true); // Initialize to true
 
   const { toast } = useToast();
 
-  // Load initial state from localStorage
+  // Load initial state (notes from IndexedDB, activeNoteId and editor content from localStorage)
   useEffect(() => {
-    try {
-      const storedNotesData = localStorage.getItem(LS_NOTES_COLLECTION);
-      const loadedNotes: Note[] = storedNotesData ? JSON.parse(storedNotesData) : [];
-      setNotes(loadedNotes);
+    setIsLoading(true);
+    const loadData = async () => {
+      try {
+        if (typeof window !== 'undefined' && window.indexedDB) {
+          await initDB();
+          const loadedNotesFromDB = await getAllNotesDB();
+          setNotes(loadedNotesFromDB);
 
-      const storedActiveNoteId = localStorage.getItem(LS_ACTIVE_NOTE_ID);
-      let initialMarkdownContent = "";
-      let resolvedActiveId: string | null = null;
+          const storedActiveNoteId = localStorage.getItem(LS_ACTIVE_NOTE_ID);
+          let initialMarkdownContent = "";
+          let resolvedActiveId: string | null = null;
 
-      if (storedActiveNoteId) {
-        const note = loadedNotes.find(n => n.id === storedActiveNoteId);
-        if (note) {
-          initialMarkdownContent = note.content;
-          resolvedActiveId = note.id;
+          if (storedActiveNoteId) {
+            const noteFromDb = loadedNotesFromDB.find(n => n.id === storedActiveNoteId);
+            if (noteFromDb) {
+              initialMarkdownContent = noteFromDb.content;
+              resolvedActiveId = noteFromDb.id;
+            } else {
+              // Try to fetch from DB directly if not in the loaded list (e.g. list was empty, ID is stale)
+              const directFetchedNote = await getNoteDB(storedActiveNoteId);
+              if (directFetchedNote) {
+                  initialMarkdownContent = directFetchedNote.content;
+                  resolvedActiveId = directFetchedNote.id;
+                  // Optionally add to notes list if it wasn't there for some reason
+                  if (!loadedNotesFromDB.some(n => n.id === directFetchedNote.id)) {
+                    setNotes(prev => [...prev, directFetchedNote]);
+                  }
+              } else {
+                localStorage.removeItem(LS_ACTIVE_NOTE_ID); // Clean up orphaned ID
+                initialMarkdownContent = localStorage.getItem(LS_EDITOR_CONTENT) || '';
+              }
+            }
+          } else {
+            initialMarkdownContent = localStorage.getItem(LS_EDITOR_CONTENT) || '';
+          }
+          
+          setMarkdown(initialMarkdownContent);
+          setActiveNoteId(resolvedActiveId);
         } else {
-          localStorage.removeItem(LS_ACTIVE_NOTE_ID); // Clean up orphaned ID
-          initialMarkdownContent = localStorage.getItem(LS_EDITOR_CONTENT) || '';
+          // Fallback or error for environments without IndexedDB
+          toast({ title: "Storage Error", description: "IndexedDB not supported. Notes cannot be saved.", variant: "destructive" });
+          setMarkdown(localStorage.getItem(LS_EDITOR_CONTENT) || ''); // Still try to load scratchpad
         }
-      } else {
-        initialMarkdownContent = localStorage.getItem(LS_EDITOR_CONTENT) || '';
+      } catch (error) {
+        console.error("Error loading data:", error);
+        toast({ title: "Error", description: `Could not load notes: ${error instanceof Error ? error.message : 'Unknown error'}. Some features may not work.`, variant: "destructive" });
+        setNotes([]); 
+        setMarkdown(localStorage.getItem(LS_EDITOR_CONTENT) || "");
+        setActiveNoteId(null);
+      } finally {
+        setIsLoading(false);
       }
-      
-      setMarkdown(initialMarkdownContent);
-      setActiveNoteId(resolvedActiveId);
-    } catch (error) {
-      console.error("Error loading from localStorage:", error);
-      toast({ title: "Error", description: "Could not load notes from local storage.", variant: "destructive" });
-      // Fallback to defaults
-      setMarkdown("");
-      setNotes([]);
-      setActiveNoteId(null);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [toast]);
+    };
+
+    loadData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toast]); // Only run once on mount
 
   // Persist activeNoteId to localStorage
   useEffect(() => {
@@ -102,30 +125,32 @@ export default function LinguaScribePage() {
     if (isLoading) return;
     const handler = setTimeout(() => {
       try {
-        localStorage.setItem(LS_EDITOR_CONTENT, markdown);
+        // Only save to LS_EDITOR_CONTENT if no note is active, or if the active note's content matches current markdown
+        // This prevents overwriting LS_EDITOR_CONTENT with an old note's content if user switches notes then quickly closes tab.
+        // The primary purpose of LS_EDITOR_CONTENT is for unsaved new notes.
+        if (!activeNoteId || (notes.find(n => n.id === activeNoteId)?.content === markdown)) {
+            localStorage.setItem(LS_EDITOR_CONTENT, markdown);
+        } else if (activeNoteId && notes.find(n => n.id === activeNoteId)?.content !== markdown) {
+            // If an active note is dirty, we could choose to save its current state to its own LS key,
+            // or rely on the explicit save. For now, LS_EDITOR_CONTENT is for the "scratchpad".
+            // The current active note's content is updated in its object in `notes` state, then DB on save.
+        }
       } catch (error) {
         console.error("Error saving editor content to localStorage:", error);
       }
     }, 500);
     return () => clearTimeout(handler);
-  }, [markdown, isLoading]);
+  }, [markdown, isLoading, activeNoteId, notes]);
 
-  // Persist notes collection to localStorage
-  useEffect(() => {
-    if (isLoading) return;
-    try {
-      localStorage.setItem(LS_NOTES_COLLECTION, JSON.stringify(notes));
-    } catch (error) {
-      console.error("Error saving notes collection to localStorage:", error);
-    }
-  }, [notes, isLoading]);
-
+  // Notes are now persisted to IndexedDB via specific actions (save, delete)
+  // So, the useEffect that saved the entire notes array to localStorage is removed.
 
   const handleNewNote = useCallback(() => {
     setActiveNoteId(null);
-    setMarkdown("");
+    setMarkdown(""); // Clear editor for new note
+    localStorage.setItem(LS_EDITOR_CONTENT, ""); // Also clear the localStorage scratchpad
     toast({ title: "New Note", description: "Editor cleared for a new note."});
-    setIsSidebarOpen(false); // Close sidebar if open
+    setIsSidebarOpen(false); 
   }, [toast]);
 
   const handleOpenNote = useCallback((noteId: string) => {
@@ -134,65 +159,79 @@ export default function LinguaScribePage() {
       setActiveNoteId(noteToOpen.id);
       setMarkdown(noteToOpen.content);
       toast({ title: "Note Opened", description: `"${noteToOpen.name}" loaded into editor.`});
-      setIsSidebarOpen(false); // Close sidebar
+      setIsSidebarOpen(false); 
     }
   }, [notes, toast]);
 
-  const handleSaveNote = () => {
+  const handleSaveNote = async () => {
     if (activeNoteId) {
-      // Update existing note
       const noteIndex = notes.findIndex(n => n.id === activeNoteId);
       if (noteIndex > -1) {
-        const updatedNotes = [...notes];
         const updatedNote = {
-          ...updatedNotes[noteIndex],
+          ...notes[noteIndex],
           content: markdown,
           lastModified: Date.now(),
         };
-        updatedNotes[noteIndex] = updatedNote;
-        setNotes(updatedNotes);
-        toast({ title: "Note Updated", description: `"${updatedNote.name}" has been saved.` });
+        try {
+          await updateNoteDB(updatedNote);
+          const updatedNotes = [...notes];
+          updatedNotes[noteIndex] = updatedNote;
+          setNotes(updatedNotes);
+          toast({ title: "Note Updated", description: `"${updatedNote.name}" has been saved.` });
+        } catch (error) {
+          console.error("Error updating note:", error);
+          toast({ title: "Update Error", description: `Could not update note: ${error instanceof Error ? error.message : 'Unknown error'}.`, variant: "destructive" });
+        }
       }
     } else {
-      // Save new note - open modal for name
-      setNewNoteName( activeNoteId ? notes.find(n=>n.id === activeNoteId)?.name || "Untitled Note" : "Untitled Note");
+      setNewNoteName("Untitled Note");
       setIsSaveModalOpen(true);
     }
   };
 
-  const completeNewNoteSave = () => {
+  const completeNewNoteSave = async () => {
     if (!newNoteName.trim()) {
       toast({ title: "Save Error", description: "Note name cannot be empty.", variant: "destructive" });
       return;
     }
     const newId = Date.now().toString();
-    const newNote: Note = {
+    const newNoteData: Note = {
       id: newId,
       name: newNoteName.trim(),
       content: markdown,
       lastModified: Date.now(),
     };
-    setNotes(prevNotes => [newNote, ...prevNotes]);
-    setActiveNoteId(newId);
-    toast({ title: "Note Saved", description: `"${newNote.name}" has been created.` });
-    setIsSaveModalOpen(false);
-    setNewNoteName("");
+    try {
+      await addNoteDB(newNoteData);
+      setNotes(prevNotes => [newNoteData, ...prevNotes].sort((a,b) => b.lastModified - a.lastModified));
+      setActiveNoteId(newId);
+      toast({ title: "Note Saved", description: `"${newNoteData.name}" has been created.` });
+      setIsSaveModalOpen(false);
+      setNewNoteName("");
+      localStorage.removeItem(LS_EDITOR_CONTENT); // Clear scratchpad after saving as a new note
+    } catch (error) {
+      console.error("Error saving new note:", error);
+      toast({ title: "Save Error", description: `Could not save new note: ${error instanceof Error ? error.message : 'Unknown error'}.`, variant: "destructive" });
+    }
   };
 
-  const handleDeleteNote = useCallback((noteId: string) => {
+  const handleDeleteNote = useCallback(async (noteId: string) => {
     const noteToDelete = notes.find(n => n.id === noteId);
     if (!noteToDelete) return;
 
-    setNotes(prevNotes => prevNotes.filter(n => n.id !== noteId));
-    toast({ title: "Note Deleted", description: `"${noteToDelete.name}" has been deleted.`});
-    if (activeNoteId === noteId) {
-      handleNewNote(); // Clear editor if active note was deleted
+    try {
+      await deleteNoteDB(noteId);
+      setNotes(prevNotes => prevNotes.filter(n => n.id !== noteId));
+      toast({ title: "Note Deleted", description: `"${noteToDelete.name}" has been deleted.`});
+      if (activeNoteId === noteId) {
+        handleNewNote(); 
+      }
+    } catch (error) {
+      console.error("Error deleting note:", error);
+      toast({ title: "Delete Error", description: `Could not delete note: ${error instanceof Error ? error.message : 'Unknown error'}.`, variant: "destructive" });
     }
   }, [notes, activeNoteId, toast, handleNewNote]);
   
-  // Original download functionality, now as "Export" (can be added later)
-  // const handleExportNote = ()_=> { ... }
-
 
   if (isLoading) {
     return (
