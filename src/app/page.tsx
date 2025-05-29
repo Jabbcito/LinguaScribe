@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { MarkdownPreview } from "@/components/markdown-preview";
-import { Save, BookText, PanelLeftOpen, FilePlus2, X } from "lucide-react";
+import { Save, BookText, PanelLeftOpen, FilePlus2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { Note } from "@/types/note";
 import { NoteList } from "@/components/note-list";
@@ -16,7 +16,6 @@ import {
   SheetHeader,
   SheetTitle,
   SheetTrigger,
-  SheetClose
 } from "@/components/ui/sheet";
 import {
   AlertDialog,
@@ -26,7 +25,7 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
-  AlertDialogTitle,
+  AlertDialogTitle as RadixAlertDialogTitle, // Renamed to avoid conflict
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -209,7 +208,7 @@ export default function LinguaScribePage() {
       <AlertDialog open={isSaveModalOpen} onOpenChange={setIsSaveModalOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Name Your Note</AlertDialogTitle>
+            <RadixAlertDialogTitle>Name Your Note</RadixAlertDialogTitle>
             <AlertDialogDescription>
               Please enter a name for your new note.
             </AlertDialogDescription>
@@ -241,6 +240,9 @@ export default function LinguaScribePage() {
               </Button>
             </SheetTrigger>
             <SheetContent side="left" className="p-0 w-full max-w-xs sm:max-w-sm flex flex-col">
+              <SheetHeader className="p-3 border-b">
+                <SheetTitle>My Notes</SheetTitle>
+              </SheetHeader>
               <NoteList
                 notes={notes}
                 activeNoteId={activeNoteId}

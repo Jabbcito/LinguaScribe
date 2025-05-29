@@ -19,9 +19,7 @@ export function NoteList({
 }: NoteListProps) {
   return (
     <div className="flex flex-col h-full bg-card">
-      <div className="p-3 border-b">
-        <h2 className="text-lg font-semibold">My Notes</h2>
-      </div>
+      {/* The title is now rendered by SheetHeader in page.tsx */}
       <ScrollArea className="flex-grow">
         {notes.length === 0 ? (
           <p className="p-4 text-sm text-muted-foreground">No notes yet. Create one!</p>
