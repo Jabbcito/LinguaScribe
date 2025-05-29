@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { MarkdownPreview } from "@/components/markdown-preview";
-import { Save, BookText, PanelLeftOpen, FilePlus2 } from "lucide-react";
+import { Save, BookText, PanelLeftOpen, FilePlus2, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { Note } from "@/types/note";
 import { NoteList } from "@/components/note-list";
@@ -32,7 +32,6 @@ import { Label } from "@/components/ui/label";
 import { initDB, getAllNotesDB, addNoteDB, updateNoteDB, deleteNoteDB, getNoteDB } from "@/lib/db";
 
 const LS_EDITOR_CONTENT = "linguaScribe_editorMarkdownContent";
-// const LS_NOTES_COLLECTION = "linguaScribe_notesCollection"; // Notes now in IndexedDB
 const LS_ACTIVE_NOTE_ID = "linguaScribe_activeNoteId";
 
 export default function LinguaScribePage() {
@@ -125,25 +124,18 @@ export default function LinguaScribePage() {
     if (isLoading) return;
     const handler = setTimeout(() => {
       try {
-        // Only save to LS_EDITOR_CONTENT if no note is active, or if the active note's content matches current markdown
-        // This prevents overwriting LS_EDITOR_CONTENT with an old note's content if user switches notes then quickly closes tab.
-        // The primary purpose of LS_EDITOR_CONTENT is for unsaved new notes.
-        if (!activeNoteId || (notes.find(n => n.id === activeNoteId)?.content === markdown)) {
+        // Only save to LS_EDITOR_CONTENT if no note is active.
+        // This acts as a scratchpad for unsaved new notes.
+        if (!activeNoteId) {
             localStorage.setItem(LS_EDITOR_CONTENT, markdown);
-        } else if (activeNoteId && notes.find(n => n.id === activeNoteId)?.content !== markdown) {
-            // If an active note is dirty, we could choose to save its current state to its own LS key,
-            // or rely on the explicit save. For now, LS_EDITOR_CONTENT is for the "scratchpad".
-            // The current active note's content is updated in its object in `notes` state, then DB on save.
         }
       } catch (error) {
         console.error("Error saving editor content to localStorage:", error);
       }
     }, 500);
     return () => clearTimeout(handler);
-  }, [markdown, isLoading, activeNoteId, notes]);
+  }, [markdown, isLoading, activeNoteId]);
 
-  // Notes are now persisted to IndexedDB via specific actions (save, delete)
-  // So, the useEffect that saved the entire notes array to localStorage is removed.
 
   const handleNewNote = useCallback(() => {
     setActiveNoteId(null);
@@ -156,12 +148,19 @@ export default function LinguaScribePage() {
   const handleOpenNote = useCallback((noteId: string) => {
     const noteToOpen = notes.find(n => n.id === noteId);
     if (noteToOpen) {
+      // If current editor content is for a "new note" (no activeNoteId) and is not empty,
+      // consider preserving it or warning user. For now, we overwrite.
+      if (!activeNoteId && markdown.trim() !== "") {
+        localStorage.setItem(LS_EDITOR_CONTENT, markdown); // Save scratchpad before opening
+         toast({ title: "Scratchpad Saved", description: "Current unsaved content was saved to scratchpad.", variant: "default" });
+      }
       setActiveNoteId(noteToOpen.id);
       setMarkdown(noteToOpen.content);
+      localStorage.removeItem(LS_EDITOR_CONTENT); // Clear scratchpad as an active note is now loaded
       toast({ title: "Note Opened", description: `"${noteToOpen.name}" loaded into editor.`});
       setIsSidebarOpen(false); 
     }
-  }, [notes, toast]);
+  }, [notes, toast, activeNoteId, markdown]);
 
   const handleSaveNote = async () => {
     if (activeNoteId) {
@@ -176,7 +175,7 @@ export default function LinguaScribePage() {
           await updateNoteDB(updatedNote);
           const updatedNotes = [...notes];
           updatedNotes[noteIndex] = updatedNote;
-          setNotes(updatedNotes);
+          setNotes(updatedNotes.sort((a,b) => b.lastModified - a.lastModified));
           toast({ title: "Note Updated", description: `"${updatedNote.name}" has been saved.` });
         } catch (error) {
           console.error("Error updating note:", error);
@@ -184,7 +183,12 @@ export default function LinguaScribePage() {
         }
       }
     } else {
-      setNewNoteName("Untitled Note");
+      // If there's content but no active note, it's a new note being saved.
+      if (markdown.trim() === "") {
+        toast({ title: "Empty Note", description: "Cannot save an empty note. Type something first!", variant: "destructive" });
+        return;
+      }
+      setNewNoteName("Untitled Note"); // Default name
       setIsSaveModalOpen(true);
     }
   };
@@ -224,14 +228,53 @@ export default function LinguaScribePage() {
       setNotes(prevNotes => prevNotes.filter(n => n.id !== noteId));
       toast({ title: "Note Deleted", description: `"${noteToDelete.name}" has been deleted.`});
       if (activeNoteId === noteId) {
-        handleNewNote(); 
+        // If the active note was deleted, clear the editor (like new note)
+        setActiveNoteId(null);
+        setMarkdown("");
+        localStorage.setItem(LS_EDITOR_CONTENT, ""); 
       }
     } catch (error) {
       console.error("Error deleting note:", error);
       toast({ title: "Delete Error", description: `Could not delete note: ${error instanceof Error ? error.message : 'Unknown error'}.`, variant: "destructive" });
     }
-  }, [notes, activeNoteId, toast, handleNewNote]);
+  }, [notes, activeNoteId, toast]);
   
+  const handleExportNote = () => {
+    if (markdown.trim() === "" && !activeNoteId) {
+      toast({
+        title: "Empty Content",
+        description: "There is no content to export.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    let fileName = "Untitled LinguaScribe Note.md";
+    let contentToExport = markdown;
+
+    if (activeNoteId) {
+      const activeNote = notes.find(n => n.id === activeNoteId);
+      if (activeNote) {
+        fileName = `${activeNote.name.replace(/[<>:"/\\|?*]+/g, '') || 'Untitled'}.md`; // Sanitize name
+        contentToExport = activeNote.content; // Export the saved content of the active note
+         if (markdown !== activeNote.content) {
+           toast({ title: "Unsaved Changes", description: "Exporting the last saved version. Save your current changes if you want them exported.", variant: "default"});
+        }
+      }
+    }
+
+    const blob = new Blob([contentToExport], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast({ title: "Note Exported", description: `"${fileName}" has been downloaded.` });
+  };
+
 
   if (isLoading) {
     return (
@@ -260,12 +303,12 @@ export default function LinguaScribePage() {
               onChange={(e) => setNewNoteName(e.target.value)}
               placeholder="e.g., Meeting Minutes"
               autoFocus
-              onKeyDown={(e) => {if (e.key === 'Enter') { e.preventDefault(); completeNewNoteSave();}}}
+              onKeyDown={(e) => {if (e.key === 'Enter' && newNoteName.trim()) { e.preventDefault(); completeNewNoteSave();}}}
             />
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={completeNewNoteSave}>Save</AlertDialogAction>
+            <AlertDialogAction onClick={completeNewNoteSave} disabled={!newNoteName.trim()}>Save</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -301,7 +344,11 @@ export default function LinguaScribePage() {
           </Button>
            <Button variant="default" onClick={handleSaveNote} aria-label="Save Note">
             <Save className="mr-2 h-4 w-4" />
-            Save Note
+            Save
+          </Button>
+           <Button variant="outline" onClick={handleExportNote} aria-label="Export Note" title="Export Note">
+            <Download className="mr-2 h-4 w-4" />
+            Export
           </Button>
           <ThemeToggle />
         </div>
@@ -330,3 +377,4 @@ export default function LinguaScribePage() {
     </div>
   );
 }
+
