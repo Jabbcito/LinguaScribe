@@ -30,9 +30,24 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { initDB, getAllNotesDB, addNoteDB, updateNoteDB, deleteNoteDB, getNoteDB } from "@/lib/db";
+import JSZip from 'jszip';
 
 const LS_EDITOR_CONTENT = "linguaScribe_editorMarkdownContent";
 const LS_ACTIVE_NOTE_ID = "linguaScribe_activeNoteId";
+
+// Helper function to sanitize note names for use as filenames
+function sanitizeFileName(name: string): string {
+  let sanitized = name.replace(/[\\/:*?"<>|]/g, '_').trim();
+  if (!sanitized) {
+    sanitized = "Untitled Note";
+  }
+  // Ensure it ends with .md if not already
+  if (!sanitized.toLowerCase().endsWith('.md')) {
+    sanitized += '.md';
+  }
+  return sanitized;
+}
+
 
 export default function LinguaScribePage() {
   const [markdown, setMarkdown] = useState<string>("");
@@ -239,7 +254,7 @@ export default function LinguaScribePage() {
     }
   }, [notes, activeNoteId, toast]);
   
-  const handleExportNote = () => {
+  const handleExportNote = async () => {
     if (notes.length === 0) {
       toast({
         title: "No Notes",
@@ -249,29 +264,51 @@ export default function LinguaScribePage() {
       return;
     }
 
-    // Notes are already sorted by lastModified descending in the state
-    const contentParts: string[] = [];
+    const zip = new JSZip();
+    const folder = zip.folder("LinguaScribe_Notes");
+
+    if (!folder) {
+        toast({ title: "Export Error", description: "Could not create folder in ZIP.", variant: "destructive" });
+        return;
+    }
+    
+    // Keep track of filenames to avoid duplicates
+    const usedFilenames = new Set<string>();
 
     notes.forEach(note => {
-      let noteBlock = `# ${note.name.trim() || 'Untitled Note'}\n\n`;
-      noteBlock += `${note.content.trim()}\n`; // Ensure one newline at the end of content
-      contentParts.push(noteBlock);
+      let baseName = (note.name || "Untitled Note").replace(/[\\/:*?"<>|]/g, '_').trim();
+      if (!baseName) {
+        baseName = `Untitled Note ${note.id}`;
+      }
+
+      let fileName = `${baseName}.md`;
+      let counter = 1;
+      // Ensure unique filename within the zip
+      while (usedFilenames.has(fileName)) {
+        fileName = `${baseName} (${counter++}).md`;
+      }
+      usedFilenames.add(fileName);
+      
+      folder.file(fileName, note.content);
     });
 
-    const combinedContent = contentParts.join('\n---\n\n'); // Separator: newline, ---, two newlines
-
-    const fileName = "All LinguaScribe Notes.md";
-    const blob = new Blob([combinedContent], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    
-    toast({ title: "All Notes Exported", description: `"${fileName}" has been downloaded.` });
+    try {
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const zipFileName = "LinguaScribe_Notes.zip";
+      
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(zipBlob);
+      link.download = zipFileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
+      
+      toast({ title: "Notes Exported", description: `All notes have been exported as "${zipFileName}".` });
+    } catch (error) {
+      console.error("Error generating ZIP file:", error);
+      toast({ title: "Export Error", description: `Could not generate ZIP file: ${error instanceof Error ? error.message : 'Unknown error'}.`, variant: "destructive" });
+    }
   };
 
 
