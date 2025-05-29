@@ -53,7 +53,7 @@ export default function LinguaScribePage() {
         if (typeof window !== 'undefined' && window.indexedDB) {
           await initDB();
           const loadedNotesFromDB = await getAllNotesDB();
-          setNotes(loadedNotesFromDB);
+          setNotes(loadedNotesFromDB.sort((a,b) => b.lastModified - a.lastModified));
 
           const storedActiveNoteId = localStorage.getItem(LS_ACTIVE_NOTE_ID);
           let initialMarkdownContent = "";
@@ -72,7 +72,7 @@ export default function LinguaScribePage() {
                   resolvedActiveId = directFetchedNote.id;
                   // Optionally add to notes list if it wasn't there for some reason
                   if (!loadedNotesFromDB.some(n => n.id === directFetchedNote.id)) {
-                    setNotes(prev => [...prev, directFetchedNote]);
+                    setNotes(prev => [...prev, directFetchedNote].sort((a,b) => b.lastModified - a.lastModified));
                   }
               } else {
                 localStorage.removeItem(LS_ACTIVE_NOTE_ID); // Clean up orphaned ID
@@ -225,7 +225,7 @@ export default function LinguaScribePage() {
 
     try {
       await deleteNoteDB(noteId);
-      setNotes(prevNotes => prevNotes.filter(n => n.id !== noteId));
+      setNotes(prevNotes => prevNotes.filter(n => n.id !== noteId).sort((a,b) => b.lastModified - a.lastModified));
       toast({ title: "Note Deleted", description: `"${noteToDelete.name}" has been deleted.`});
       if (activeNoteId === noteId) {
         // If the active note was deleted, clear the editor (like new note)
@@ -240,30 +240,28 @@ export default function LinguaScribePage() {
   }, [notes, activeNoteId, toast]);
   
   const handleExportNote = () => {
-    if (markdown.trim() === "" && !activeNoteId) {
+    if (notes.length === 0) {
       toast({
-        title: "Empty Content",
-        description: "There is no content to export.",
-        variant: "destructive",
+        title: "No Notes",
+        description: "There are no notes to export.",
+        variant: "default",
       });
       return;
     }
 
-    let fileName = "Untitled LinguaScribe Note.md";
-    let contentToExport = markdown;
+    // Notes are already sorted by lastModified descending in the state
+    const contentParts: string[] = [];
 
-    if (activeNoteId) {
-      const activeNote = notes.find(n => n.id === activeNoteId);
-      if (activeNote) {
-        fileName = `${activeNote.name.replace(/[<>:"/\\|?*]+/g, '') || 'Untitled'}.md`; // Sanitize name
-        contentToExport = activeNote.content; // Export the saved content of the active note
-         if (markdown !== activeNote.content) {
-           toast({ title: "Unsaved Changes", description: "Exporting the last saved version. Save your current changes if you want them exported.", variant: "default"});
-        }
-      }
-    }
+    notes.forEach(note => {
+      let noteBlock = `# ${note.name.trim() || 'Untitled Note'}\n\n`;
+      noteBlock += `${note.content.trim()}\n`; // Ensure one newline at the end of content
+      contentParts.push(noteBlock);
+    });
 
-    const blob = new Blob([contentToExport], { type: "text/markdown;charset=utf-8" });
+    const combinedContent = contentParts.join('\n---\n\n'); // Separator: newline, ---, two newlines
+
+    const fileName = "All LinguaScribe Notes.md";
+    const blob = new Blob([combinedContent], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -272,7 +270,8 @@ export default function LinguaScribePage() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    toast({ title: "Note Exported", description: `"${fileName}" has been downloaded.` });
+    
+    toast({ title: "All Notes Exported", description: `"${fileName}" has been downloaded.` });
   };
 
 
@@ -346,7 +345,7 @@ export default function LinguaScribePage() {
             <Save className="mr-2 h-4 w-4" />
             Save
           </Button>
-           <Button variant="outline" onClick={handleExportNote} aria-label="Export Note" title="Export Note">
+           <Button variant="outline" onClick={handleExportNote} aria-label="Export All Notes" title="Export All Notes">
             <Download className="mr-2 h-4 w-4" />
             Export
           </Button>
